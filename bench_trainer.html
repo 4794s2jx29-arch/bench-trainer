@@ -1,0 +1,305 @@
+
+<!doctype html>
+<html lang="cs">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>Bench Trainer — tréninkový deník</title>
+<style>
+  body{font-family:system-ui,-apple-system,Segoe UI,Roboto,Arial;background:#f6f7fb;color:#111;margin:0;padding:20px;}
+  h1{margin:0 0 10px}
+  .controls{display:flex;gap:10px;flex-wrap:wrap;margin-bottom:10px}
+  label{font-weight:600}
+  select,input[type=number]{padding:6px;border-radius:6px;border:1px solid #cfd8e3}
+  .card{background:white;border-radius:10px;padding:12px;margin-bottom:12px;box-shadow:0 4px 12px rgba(16,24,40,0.06)}
+  table{width:100%;border-collapse:collapse}
+  th,td{padding:8px;text-align:left;border-bottom:1px solid #f0f2f7}
+  .set-row{display:flex;align-items:center;gap:10px;margin:6px 0}
+  .set-row input[type=number]{width:80px}
+  .set-row .done{margin-left:auto}
+  button{padding:8px 12px;border-radius:8px;border:0;background:#2563eb;color:white;cursor:pointer}
+  button.ghost{background:transparent;color:#2563eb;border:1px solid #c7dbff}
+  .small{font-size:0.9rem;color:#475569}
+  .muted{color:#94a3b8;font-size:0.85rem}
+  .log{background:#0f172a;color:white;padding:8px;border-radius:8px;font-weight:600;display:inline-block}
+  .footer{margin-top:18px;font-size:0.85rem;color:#64748b}
+  .exercise-title{font-weight:700}
+  .flex{display:flex;gap:8px;align-items:center}
+  input[type=checkbox]{width:18px;height:18px}
+  .clear{background:#ef4444}
+  .success{background:#16a34a}
+  .row{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+  @media (min-width:700px){ .controls{align-items:center} }
+</style>
+</head>
+<body>
+<h1>Bench Trainer — tréninkový deník</h1>
+<p class="muted">Ukázkový interaktivní tracker pro plán: 95 kg × 1 → 100 kg × 10. Údaje se ukládají v prohlížeči (localStorage).</p>
+
+<div class="card controls">
+  <div class="row">
+    <label for="oneRm">Zadej 1RM (kg):</label>
+    <input id="oneRm" type="number" min="1" step="0.5" value="95">
+    <button id="saveOneRm" class="ghost">Uložit 1RM</button>
+  </div>
+
+  <div class="row">
+    <label for="week">Týden:</label>
+    <select id="week"></select>
+    <label for="day">Den:</label>
+    <select id="day">
+      <option value="1">1 — Bench (silový)</option>
+      <option value="2">2 — Nohy</option>
+      <option value="3">3 — Regenerace</option>
+      <option value="4">4 — Bench (objem)</option>
+      <option value="5">5 — Záda + ramena</option>
+    </select>
+  </div>
+
+  <div class="row">
+    <button id="loadWorkout">Načíst trénink</button>
+    <button id="resetAll" class="clear">Vymazat záznamy</button>
+    <button id="export" class="ghost">Exportovat záznamy (JSON)</button>
+  </div>
+</div>
+
+<div id="workoutArea"></div>
+
+<div class="card">
+  <div class="row">
+    <div>
+      <div class="small">Test průběžně</div>
+      <div>Otestuj <strong>100 kg</strong> — zaznamenej počet opakování níže:</div>
+    </div>
+    <div style="margin-left:auto">
+      <input id="test100" type="number" min="0" step="1" placeholder="počet opakování">
+      <button id="saveTest" class="success">Uložit test</button>
+    </div>
+  </div>
+  <div style="margin-top:10px" id="testLog"></div>
+</div>
+
+<div class="footer">
+  <div>Jak to funguje: vyber týden a den → stránky vypočítají doporučené váhy z 1RM (zaokrouhleno na 2.5 kg). Můžeš upravit hodnoty, odškrtávat série a zapisovat skutečné opakování/váhy. Data se ukládají v prohlížeči.</div>
+</div>
+
+<script>
+// =========== plán (zjednodušený 12 týdenní) ===========
+const plan = (() => {
+  // Každý týden má procenta pro hlavní den a objemový den
+  const weeks = [];
+  for(let w=1; w<=12; w++){
+    if(w<=4){
+      weeks.push({
+        main: [{sets:5,reps:5,pct:0.72}], // 5x5 @ 70-75%
+        volume: [{sets:4,reps:8,pct:0.62}]
+      });
+    } else if(w<=8){
+      weeks.push({
+        main: [{sets:6,reps:4,pct:0.82}], // 6x4 @ 80-85%
+        volume: [{sets:4,reps:6,pct:0.70}]
+      });
+    } else {
+      weeks.push({
+        main: [{sets:5,reps:3,pct:0.88}], // 5x3 @ 85-90%
+        volume: [{sets:5,reps:8,pct:0.72}]
+      });
+    }
+  }
+  return weeks;
+})();
+
+// Helpery
+function roundPlate(x){
+  // round to nearest 2.5 kg
+  return Math.round(x*2)/2.0; // but using 0.5 step; we'll display with .5 or integer
+}
+function fmt(x){ return Number.isInteger(x)?String(x):String(x).replace(".",","); }
+
+// Init UI
+const weekSel = document.getElementById('week');
+for(let i=1;i<=12;i++){ const o = document.createElement('option'); o.value=i; o.textContent='Týden '+i; weekSel.appendChild(o); }
+const daySel = document.getElementById('day');
+const oneRmInput = document.getElementById('oneRm');
+const saveOneRm = document.getElementById('saveOneRm');
+const loadBtn = document.getElementById('loadWorkout');
+const workoutArea = document.getElementById('workoutArea');
+const resetBtn = document.getElementById('resetAll');
+const exportBtn = document.getElementById('export');
+const testInput = document.getElementById('test100');
+const saveTestBtn = document.getElementById('saveTest');
+const testLog = document.getElementById('testLog');
+
+// storage keys
+const STORAGE_KEY = 'benchTrainer_v1_data';
+const RM_KEY = 'benchTrainer_v1_1rm';
+const TEST_KEY = 'benchTrainer_v1_tests';
+
+// load stored 1RM
+if(localStorage.getItem(RM_KEY)){ oneRmInput.value = localStorage.getItem(RM_KEY); }
+
+saveOneRm.addEventListener('click', ()=>{
+  const v = parseFloat(oneRmInput.value) || 95;
+  localStorage.setItem(RM_KEY, String(v));
+  alert('Uloženo: 1RM = ' + v + ' kg');
+});
+
+loadBtn.addEventListener('click', renderWorkout);
+resetBtn.addEventListener('click', ()=>{ if(confirm('Smazat všechna lokální data (záznamy)?')){ localStorage.removeItem(STORAGE_KEY); localStorage.removeItem(TEST_KEY); renderWorkout(); renderTests(); alert('Smazáno.'); } });
+
+exportBtn.addEventListener('click', ()=>{
+  const data = JSON.stringify({settings:{oneRm:localStorage.getItem(RM_KEY)||oneRmInput.value}, logs:JSON.parse(localStorage.getItem(STORAGE_KEY)||'{}'), tests:JSON.parse(localStorage.getItem(TEST_KEY)||'[]')}, null, 2);
+  const blob = new Blob([data],{type:'application/json'});
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a'); a.href = url; a.download = 'bench_trainer_export.json'; a.click();
+  URL.revokeObjectURL(url);
+});
+
+function getStored(){ return JSON.parse(localStorage.getItem(STORAGE_KEY)||'{}'); }
+function saveStored(obj){ localStorage.setItem(STORAGE_KEY, JSON.stringify(obj)); }
+
+function renderWorkout(){
+  const wk = parseInt(weekSel.value,10);
+  const day = parseInt(daySel.value,10);
+  const oneRm = parseFloat(localStorage.getItem(RM_KEY)||oneRmInput.value)||95;
+  workoutArea.innerHTML = '';
+
+  if(day===3){
+    workoutArea.innerHTML = `<div class="card"><div class="small">Den regenerace / mobilita</div><p class="muted">Lehká aktivita: mobilita ramen, lehké kardio, foam rolling. Doma: 15–20 min.</p></div>`;
+    return;
+  }
+
+  // decide which template to use
+  let block;
+  if(day===1){
+    block = plan[wk-1].main;
+  } else if(day===4){
+    block = plan[wk-1].volume;
+  } else {
+    // accessory days: simple template
+    block = [{sets:4,reps:8,pct:0.0}];
+  }
+
+  const card = document.createElement('div'); card.className='card';
+  const title = document.createElement('div'); title.innerHTML = `<div class="exercise-title">${day===1?'Bench press — silový den': day===4?'Bench press — objemový den':'Accessory / obecný trénink'}</div><div class="small">Týden ${wk} — doporučení z 1RM ${oneRm} kg</div>`;
+  card.appendChild(title);
+
+  // For bench days, show each "exercise" (main bench)
+  const exList = [];
+  if(day===1 || day===4){
+    const conf = block[0];
+    for(let s=1;s<=conf.sets;s++){
+      const set = {set: s, reps: conf.reps, pct: conf.pct, prescribed: roundPlate(oneRm * conf.pct)};
+      // fallback: if pct==0 (accessory) compute a reasonable value
+      if(conf.pct===0) set.prescribed = Math.max(20, roundPlate(oneRm * 0.5));
+      exList.push(set);
+    }
+  } else {
+    // accessory example: Dumbbell bench / OHP / back
+    const accessory = [
+      {title:'Dumbbell bench', sets:4, reps:10, pct:0.5},
+      {title:'Overhead press', sets:3, reps:8, pct:0.45},
+      {title:'Face pulls', sets:3, reps:15, pct:0},
+    ];
+    accessory.forEach(ex=>{
+      for(let s=1;s<=ex.sets;s++){
+        exList.push({title:ex.title, set:s, reps:ex.reps, pct:ex.pct, prescribed: ex.pct? roundPlate(oneRm * ex.pct) : ''});
+      }
+    });
+  }
+
+  // load saved logs
+  const stored = getStored();
+  const key = `w${wk}_d${day}`;
+  const logs = stored[key] || {};
+
+  exList.forEach((item,idx)=>{
+    const row = document.createElement('div'); row.className='set-row';
+    const left = document.createElement('div');
+    left.innerHTML = `<div class="muted">Série ${item.set}</div><div>${item.reps} opakování</div>`;
+    row.appendChild(left);
+
+    const mid = document.createElement('div'); mid.className='flex';
+    const weightInput = document.createElement('input'); weightInput.type='number'; weightInput.step='0.5'; weightInput.min='0'; weightInput.value = (logs[idx] && logs[idx].weight !== undefined) ? logs[idx].weight : (item.prescribed || '');
+    const repsInput = document.createElement('input'); repsInput.type='number'; repsInput.step='1'; repsInput.min='0'; repsInput.value = (logs[idx] && logs[idx].reps !== undefined) ? logs[idx].reps : item.reps;
+    weightInput.title='Skutečná váha (kg)';
+    repsInput.title='Skutečné opakování';
+    mid.appendChild(weightInput); mid.appendChild(repsInput);
+    row.appendChild(mid);
+
+    const done = document.createElement('input'); done.type='checkbox'; done.className='done'; done.checked = (logs[idx] && logs[idx].done) ? true : false;
+    row.appendChild(done);
+
+    // save on change
+    function saveRow(){
+      const storedAll = getStored();
+      const existing = storedAll[key] || {};
+      existing[idx] = {weight: weightInput.value?parseFloat(weightInput.value):null, reps: repsInput.value?parseInt(repsInput.value,10):null, done: done.checked, time: new Date().toISOString()};
+      storedAll[key] = existing;
+      saveStored(storedAll);
+    }
+    weightInput.addEventListener('change', saveRow);
+    repsInput.addEventListener('change', saveRow);
+    done.addEventListener('change', saveRow);
+
+    card.appendChild(row);
+  });
+
+  // extras: note and save button
+  const noteRow = document.createElement('div'); noteRow.style.marginTop='8px';
+  const note = document.createElement('textarea'); note.placeholder='Poznámky k tréninku (bolesti, tempo, cokoliv)...'; note.style.width='100%'; note.style.height='60px';
+  const savedNotes = (getStored()[key] && getStored()[key].note) ? getStored()[key].note : '';
+  note.value = savedNotes;
+  noteRow.appendChild(note);
+  card.appendChild(noteRow);
+  const saveNoteBtn = document.createElement('button'); saveNoteBtn.textContent='Uložit poznámky'; saveNoteBtn.style.marginTop='8px';
+  saveNoteBtn.addEventListener('click', ()=>{
+    const storedAll = getStored();
+    const existing = storedAll[key] || {};
+    existing.note = note.value;
+    storedAll[key] = existing;
+    saveStored(storedAll);
+    alert('Poznámky uložené.');
+  });
+  card.appendChild(saveNoteBtn);
+
+  workoutArea.appendChild(card);
+  // show quick link to jump to key
+  const info = document.createElement('div'); info.className='muted small'; info.style.marginTop='6px'; info.textContent = 'Tip: uprav váhy kdykoli, vše se ukládá automaticky.';
+  workoutArea.appendChild(info);
+}
+
+// Tests
+function renderTests(){
+  const arr = JSON.parse(localStorage.getItem(TEST_KEY)||'[]');
+  if(arr.length===0){ testLog.innerHTML = '<div class="muted">Žádné testy dosud.</div>'; return; }
+  testLog.innerHTML = '';
+  arr.slice().reverse().forEach(t=>{
+    const d = new Date(t.time).toLocaleString();
+    const el = document.createElement('div'); el.className='card';
+    el.innerHTML = `<div class="row"><div><div class="small">Test 100 kg</div><div><span class="log">${t.reps} opakování</span></div><div class="muted small">${d}</div></div></div>`;
+    testLog.appendChild(el);
+  });
+}
+saveTestBtn.addEventListener('click', ()=>{
+  const reps = parseInt(testInput.value,10);
+  if(!Number.isFinite(reps)){ alert('Zadej počet opakování.'); return; }
+  const arr = JSON.parse(localStorage.getItem(TEST_KEY)||'[]');
+  arr.push({reps:reps, time:new Date().toISOString()});
+  localStorage.setItem(TEST_KEY, JSON.stringify(arr));
+  testInput.value='';
+  renderTests();
+  alert('Uloženo.');
+});
+
+// initial render
+renderWorkout();
+renderTests();
+
+// render when week/day changed
+weekSel.addEventListener('change', renderWorkout);
+daySel.addEventListener('change', renderWorkout);
+
+</script>
+</body>
+</html>
